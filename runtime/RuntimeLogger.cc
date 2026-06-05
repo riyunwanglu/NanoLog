@@ -68,13 +68,18 @@ RuntimeLogger::RuntimeLogger()
         , registrationMutex()
         , invocationSites()
         , nextInvocationIndexToBePersisted(0)
+        , logFileName_(NanoLogConfig::DEFAULT_LOG_FILE)
+        , textLogFilePattern_(std::string(NanoLogConfig::DEFAULT_LOG_FILE) + ".%Y%m%d.txt")
+        , outputMode_(OutputMode::TEXT_ONLY)
 {
     for (size_t i = 0; i < Util::arraySize(stagingBufferPeekDist); ++i)
         stagingBufferPeekDist[i] = 0;
 
     const char *filename = NanoLogConfig::DEFAULT_LOG_FILE;
-    outputFd = open(filename, NanoLogConfig::FILE_PARAMS, 0666);
-    if (outputFd < 0) {
+    outputFd = -1;
+    if (outputMode_ == OutputMode::BINARY_AND_TEXT)
+        outputFd = open(filename, NanoLogConfig::FILE_PARAMS, 0666);
+    if (outputMode_ == OutputMode::BINARY_AND_TEXT && outputFd < 0) {
         fprintf(stderr, "NanoLog could not open the default file location "
                 "for the log file (\"%s\").\r\n Please check the permissions "
                 "or use NanoLog::setLogFile(const char* filename) to "
@@ -130,10 +135,10 @@ RuntimeLogger::~RuntimeLogger() {
         outputDoubleBuffer = nullptr;
     }
 
-    if (outputFd > 0)
+    if (outputFd >= 0)
         close(outputFd);
 
-    outputFd = 0;
+    outputFd = -1;
 }
 
 // Documentation in NanoLog.h
@@ -143,7 +148,8 @@ RuntimeLogger::getStats() {
     char buffer[1024];
     // Leaks abstraction, but basically flush so we get all the time
     uint64_t start = PerfUtils::Cycles::rdtsc();
-    fdatasync(nanoLogSingleton.outputFd);
+    if (nanoLogSingleton.outputFd >= 0)
+        fdatasync(nanoLogSingleton.outputFd);
     uint64_t stop = PerfUtils::Cycles::rdtsc();
     nanoLogSingleton.cyclesDiskIO_upperBound += (stop - start);
 
@@ -401,9 +407,14 @@ RuntimeLogger::compressionThreadMain() {
             if (nextInvocationIndexToBePersisted < invocationSites.size())
             {
                 std::unique_lock<std::mutex> lock (registrationMutex);
-                encoder.encodeNewDictionaryEntries(
-                                               nextInvocationIndexToBePersisted,
-                                               invocationSites);
+                if (outputMode_ != OutputMode::TEXT_ONLY) {
+                    encoder.encodeNewDictionaryEntries(
+                                                   nextInvocationIndexToBePersisted,
+                                                   invocationSites);
+                } else {
+                    nextInvocationIndexToBePersisted =
+                        downCast<uint32_t>(invocationSites.size());
+                }
 
                 // update our shadow copy
                 for (uint64_t i = shadowStaticInfo.size();
@@ -594,6 +605,8 @@ RuntimeLogger::compressionThreadMain() {
         ssize_t bytesToWrite = encoder.getEncodedBytes();
         if (bytesToWrite == 0)
             continue;
+        if (outputMode_ == OutputMode::TEXT_ONLY || outputFd < 0)
+            continue;
 
         // Pad the output if necessary
         if (NanoLogConfig::FILE_PARAMS & O_DIRECT) {
@@ -632,25 +645,33 @@ const char *
 RuntimeLogger::getLogFile_internal()  const {
     return logFileName_.c_str();
 }
+
+const char *
+RuntimeLogger::getTextLogFilePattern_internal() const {
+    return textLogFilePattern_.c_str();
+}
 // Documentation in NanoLog.h
 void
 RuntimeLogger::setLogFile_internal(const char *filename) {
-    logFileName_ = std::string(filename) + ".txt";
+    logFileName_ = filename;
     // Check if it exists and is readable/writeable
-    if (access(filename, F_OK) == 0 && access(filename, R_OK | W_OK) != 0) {
+    if (outputMode_ == OutputMode::BINARY_AND_TEXT &&
+        access(filename, F_OK) == 0 && access(filename, R_OK | W_OK) != 0) {
         std::string err = "Unable to read/write from new log file: ";
         err.append(filename);
         throw std::ios_base::failure(err);
     }
 
-    // Try to open the file
-    int newFd = open(filename, NanoLogConfig::FILE_PARAMS, 0666);
-    if (newFd < 0) {
-        std::string err = "Unable to open file new log file: '";
-        err.append(filename);
-        err.append("': ");
-        err.append(strerror(errno));
-        throw std::ios_base::failure(err);
+    int newFd = -1;
+    if (outputMode_ == OutputMode::BINARY_AND_TEXT) {
+        newFd = open(filename, NanoLogConfig::FILE_PARAMS, 0666);
+        if (newFd < 0) {
+            std::string err = "Unable to open file new log file: '";
+            err.append(filename);
+            err.append("': ");
+            err.append(strerror(errno));
+            throw std::ios_base::failure(err);
+        }
     }
 
     // Everything seems okay, stop the background thread and change files
@@ -666,7 +687,7 @@ RuntimeLogger::setLogFile_internal(const char *filename) {
     if (compressionThread.joinable())
         compressionThread.join();
 
-    if (outputFd > 0)
+    if (outputFd >= 0)
         close(outputFd);
     outputFd = newFd;
 
@@ -701,6 +722,36 @@ RuntimeLogger::setLogFile(const char *filename) {
 const char *
 RuntimeLogger::getTxtLogFile() {
     return nanoLogSingleton.getLogFile_internal();
+}
+
+const char *
+RuntimeLogger::getTextLogFilePattern() {
+    return nanoLogSingleton.getTextLogFilePattern_internal();
+}
+
+OutputMode
+RuntimeLogger::getOutputMode() {
+    return nanoLogSingleton.outputMode_;
+}
+
+void
+RuntimeLogger::setTextLogFilePattern_internal(const char *pattern) {
+    textLogFilePattern_ = pattern == nullptr ? "" : pattern;
+}
+
+void
+RuntimeLogger::setTextLogFilePattern(const char *pattern) {
+    nanoLogSingleton.setTextLogFilePattern_internal(pattern);
+}
+
+void
+RuntimeLogger::setOutputMode_internal(OutputMode mode) {
+    outputMode_ = mode;
+}
+
+void
+RuntimeLogger::setOutputMode(OutputMode mode) {
+    nanoLogSingleton.setOutputMode_internal(mode);
 }
 
 /**

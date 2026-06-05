@@ -14,6 +14,7 @@
  */
 
 #include <ctime>
+#include <string>
 #include <vector>
 
 #include <cassert>
@@ -677,6 +678,7 @@ namespace Log {
         Encoder(char *buffer, size_t bufferSize,
                 bool skipCheckpoint=false,
                 bool forceDictionaryOutput=false);
+        ~Encoder();
 
 #ifdef PREPROCESSOR_NANOLOG
         long encodeLogMsgs(char *from, uint64_t nbytes,
@@ -705,9 +707,12 @@ namespace Log {
         char * printfBuf;
         int32_t printfBufSize = 1<<10; 
         Checkpoint checkPointForDumpTxtLog;
+        std::string txtLogBaseName;
+        std::string txtLogDate;
         //end of adding
     
         bool encodeBufferExtentStart(uint32_t bufferId, bool wrapAround);
+        FILE *getTxtLogFileForEntry(uint64_t timestamp);
 
         // Used to store the compressed log messages and related metadata
         char *backing_buffer;

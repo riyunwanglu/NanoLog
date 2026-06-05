@@ -34,6 +34,14 @@ namespace NanoLog {
         RuntimeLogger::setLogFile(filename);
     }
 
+    void setTextLogFilePattern(const char *pattern) {
+        RuntimeLogger::setTextLogFilePattern(pattern);
+    }
+
+    void setOutputMode(OutputMode mode) {
+        RuntimeLogger::setOutputMode(mode);
+    }
+
     LogLevel getLogLevel() {
         return RuntimeLogger::getLogLevel();
     }

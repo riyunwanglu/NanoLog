@@ -60,6 +60,11 @@ namespace LogLevels {
 };
 using namespace LogLevels;
 
+enum class OutputMode {
+    TEXT_ONLY = 0,
+    BINARY_AND_TEXT = 1,
+};
+
 // User API
 
 /**
@@ -81,6 +86,19 @@ void preallocate();
  *      Where to place the log file
  */
 void setLogFile(const char* filename);
+
+/**
+ * Sets the human-readable text log file pattern. The pattern is passed through
+ * strftime using each log entry's timestamp, so patterns such as
+ * "logs/app.%Y%m%d.log" create daily log files.
+ */
+void setTextLogFilePattern(const char* pattern);
+
+/**
+ * Sets whether NanoLog should output only readable text logs or both the
+ * original binary log and readable text logs.
+ */
+void setOutputMode(OutputMode mode);
 
 /**
  * Sets the minimum logging severity level in the system. All log statements

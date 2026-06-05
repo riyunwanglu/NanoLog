@@ -19,6 +19,7 @@
 #include <regex>
 #include <vector>
 #include <fstream>
+#include <string>
 #include "Log.h"
 #include "GeneratedCode.h"
 #include "RuntimeLogger.h"
@@ -113,20 +114,32 @@ Log::Encoder::Encoder(char *buffer,
                                 size_t bufferSize,
                                 bool skipCheckpoint,
                                 bool forceDictionaryOutput)
-    : backing_buffer(buffer)
+    : fileHandler(nullptr)
+    , printfBuf(nullptr)
+    , checkPointForDumpTxtLog()
+    , txtLogBaseName(RuntimeLogger::getTextLogFilePattern())
+    , txtLogDate()
+    , backing_buffer(buffer)
     , writePos(buffer)
     , endOfBuffer(buffer + bufferSize)
     , lastBufferIdEncoded(-1)
     , currentExtentSize(nullptr)
     , encodeMissDueToMetadata(0)
     , consecutiveEncodeMissesDueToMetadata(0)
-    ,fileHandler(fopen(RuntimeLogger::getTxtLogFile(),"a"))
 {
-    
      //adding by wezhu
      printfBuf = (char *)malloc(printfBufSize);
-     printf("Nano::txt type log is %s\n",RuntimeLogger::getTxtLogFile());
      // end
+
+     if (RuntimeLogger::getOutputMode() == OutputMode::TEXT_ONLY) {
+         checkPointForDumpTxtLog.entryType = EntryType::CHECKPOINT;
+         checkPointForDumpTxtLog.rdtsc = PerfUtils::Cycles::rdtsc();
+         checkPointForDumpTxtLog.unixTime = std::time(nullptr);
+         checkPointForDumpTxtLog.cyclesPerSecond = PerfUtils::Cycles::getCyclesPerSec();
+         checkPointForDumpTxtLog.newMetadataBytes = 0;
+         checkPointForDumpTxtLog.totalMetadataEntries = 0;
+         return;
+     }
 
      // Start the buffer off with a checkpoint
      if (skipCheckpoint && !forceDictionaryOutput)
@@ -147,6 +160,54 @@ Log::Encoder::Encoder(char *buffer,
         exit(-1);
     }
 
+}
+
+Log::Encoder::~Encoder() {
+    if (fileHandler != nullptr) {
+        fflush(fileHandler);
+        fclose(fileHandler);
+        fileHandler = nullptr;
+    }
+
+    if (printfBuf != nullptr) {
+        free(printfBuf);
+        printfBuf = nullptr;
+    }
+}
+
+FILE *
+Log::Encoder::getTxtLogFileForEntry(uint64_t timestamp) {
+    if (txtLogBaseName.empty())
+        return nullptr;
+
+    double secondsSinceCheckpoint = PerfUtils::Cycles::toSeconds(
+            timestamp - checkPointForDumpTxtLog.rdtsc,
+            checkPointForDumpTxtLog.cyclesPerSecond);
+    auto wholeSeconds = static_cast<int64_t>(secondsSinceCheckpoint);
+    std::time_t absTime = wholeSeconds + checkPointForDumpTxtLog.unixTime;
+
+    std::tm tmValue;
+    localtime_r(&absTime, &tmValue);
+
+    char filename[4096];
+    if (strftime(filename, sizeof(filename), txtLogBaseName.c_str(), &tmValue) == 0)
+        return nullptr;
+
+    if (fileHandler != nullptr && txtLogDate == filename)
+        return fileHandler;
+
+    if (fileHandler != nullptr) {
+        fflush(fileHandler);
+        fclose(fileHandler);
+        fileHandler = nullptr;
+    }
+
+    txtLogDate = filename;
+    fileHandler = fopen(filename, "a");
+    if (fileHandler != nullptr)
+        setvbuf(fileHandler, nullptr, _IOLBF, 0);
+
+    return fileHandler;
 }
 
 /**
@@ -335,6 +396,43 @@ Log::Encoder::encodeLogMsgs(char *from,
                             std::vector<StaticLogInfo> dictionary,
                             uint64_t *numEventsCompressed)
 {
+    if (RuntimeLogger::getOutputMode() == OutputMode::TEXT_ONLY) {
+        long remaining = nbytes;
+        long numEventsProcessed = 0;
+
+        while (remaining > 0) {
+            auto *entry = reinterpret_cast<UncompressedEntry*>(from);
+
+            if (dictionary.size() <= entry->fmtId) {
+                ++encodeMissDueToMetadata;
+                ++consecutiveEncodeMissesDueToMetadata;
+                break;
+            }
+
+            consecutiveEncodeMissesDueToMetadata = 0;
+
+            if (entry->entrySize > remaining)
+                break;
+
+            StaticLogInfo &info = dictionary.at(entry->fmtId);
+            FILE *txtLogFile = getTxtLogFileForEntry(entry->timestamp);
+            if (txtLogFile != nullptr) {
+                info.dumpDirectFunction(txtLogFile, info, entry, bufferId,
+                                        checkPointForDumpTxtLog, &printfBuf,
+                                        printfBufSize);
+            }
+
+            remaining -= entry->entrySize;
+            from += entry->entrySize;
+            ++numEventsProcessed;
+        }
+
+        if (numEventsCompressed)
+            *numEventsCompressed += numEventsProcessed;
+
+        return nbytes - remaining;
+    }
+
     if (!encodeBufferExtentStart(bufferId, newPass))
         return 0;
 
@@ -405,7 +503,11 @@ Log::Encoder::encodeLogMsgs(char *from,
 #endif
         char *argData = entry->argData;
         //adding by wezhu
-        info.dumpDirectFunction(fileHandler, info ,entry,bufferId, checkPointForDumpTxtLog,&printfBuf, printfBufSize);
+        FILE *txtLogFile = getTxtLogFileForEntry(entry->timestamp);
+        if (txtLogFile != nullptr)
+            info.dumpDirectFunction(txtLogFile, info, entry, bufferId,
+                                    checkPointForDumpTxtLog, &printfBuf,
+                                    printfBufSize);
         //end of adding
 
         info.compressionFunction(info.numNibbles, info.paramTypes,

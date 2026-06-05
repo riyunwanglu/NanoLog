@@ -128,6 +128,10 @@ using namespace NanoLog;
         static void preallocate();
         static void setLogFile(const char *filename);
         static const char *getTxtLogFile();
+        static const char *getTextLogFilePattern();
+        static OutputMode getOutputMode();
+        static void setTextLogFilePattern(const char *pattern);
+        static void setOutputMode(OutputMode mode);
         static void setLogLevel(LogLevel logLevel);
         static void sync();
 
@@ -162,8 +166,11 @@ using namespace NanoLog;
         void compressionThreadMain();
 
         void setLogFile_internal(const char *filename);
+        void setTextLogFilePattern_internal(const char *pattern);
+        void setOutputMode_internal(OutputMode mode);
 
         const char * getLogFile_internal() const;
+        const char * getTextLogFilePattern_internal() const;
 
         void waitForAIO();
 
@@ -309,6 +316,8 @@ using namespace NanoLog;
         uint32_t nextInvocationIndexToBePersisted;
 
         std::string logFileName_;
+        std::string textLogFilePattern_;
+        OutputMode outputMode_;
 
         /**
          * Implements a circular FIFO producer/consumer byte queue that is used
@@ -533,4 +542,3 @@ using namespace NanoLog;
 static const int __internal_dummy_variable_marker_for_code_injection = 0;
 
 #endif /* RUNTIME_NANOLOG_H */
-

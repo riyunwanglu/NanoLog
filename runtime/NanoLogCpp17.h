@@ -17,6 +17,8 @@
 #define NANOLOG_CPP17_H
 
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include <algorithm>
@@ -24,6 +26,9 @@
 #include <utility>
 #include <numeric>
 #include <fstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
 #include "Common.h"
 #include "Cycles.h"
 #include "Packer.h"
@@ -1126,12 +1131,10 @@ inline void __attribute__((always_inline)) reallocateBuf(char **printfBuf, int &
         throw std::runtime_error("ERROR! printfBufSizeTotal less zero");
     }
     
-    delete(*printfBuf);
+    free(*printfBuf);
     *printfBuf = (char *)malloc(printfBufSizeTotal);
     
 }
-
-
 
 std::string inline getTimeString(uint64_t timeStamp, const Log::Checkpoint & checkPoint)
 {
@@ -1152,30 +1155,67 @@ std::string inline getTimeString(uint64_t timeStamp, const Log::Checkpoint & che
 
                     
     std::time_t absTime = wholeSeconds + checkPoint.unixTime;
-    std::tm *tm = localtime(&absTime);
-    strftime(timeString, sizeof(timeString), "%Y-%m-%d %H:%M:%S", tm);    
+    std::tm tmValue;
+    localtime_r(&absTime, &tmValue);
+    strftime(timeString, sizeof(timeString), "%Y-%m-%d %H:%M:%S", &tmValue);
 
     
     sprintf(timeStringWithNano, "%s.%09.0lf",timeString, nanos);
     return timeStringWithNano;
 }
 
-inline void printfLogHeader(FILE * fHandler, const StaticLogInfo&info, Log::UncompressedEntry*entry,uint32_t threadId, const Log::Checkpoint & checkPoint)
+inline const char *logLevelName(int32_t logLevel)
+{
+    static const char* logLevelNames[] = {"NONE", "ERROR", "WARN", "INFO", "DEBUG"};
+    if (logLevel < 0 || logLevel >= static_cast<int32_t>(sizeof(logLevelNames) / sizeof(logLevelNames[0])))
+        return "UNKNOWN";
+    return logLevelNames[logLevel];
+}
+
+inline void writePrettyLogLine(FILE *fHandler,
+                               const StaticLogInfo& info,
+                               Log::UncompressedEntry *entry,
+                               uint32_t runtimeThreadId,
+                               const Log::Checkpoint &checkPoint,
+                               const char *message)
 {
     std::string timeString = getTimeString(entry->timestamp, checkPoint);
-    int32_t logLevel = info.severity;
-    
-    int32_t runtimeId = threadId;
 
-    static const char* logLevelNames[] = {"(none)", "error", "warning",
-                                        "info", "debug"};
+    int pid = 0;
+    unsigned long tid = 0;
+    char module[128] = {};
+    int messageOffset = 0;
 
-    fprintf(fHandler,"[%s][%s][t %u] ", timeString.c_str(),logLevelNames[logLevel], runtimeId);
+    if (std::sscanf(message, "pid=%d tid=%lu module=%127s %n",
+                    &pid, &tid, module, &messageOffset) == 3 && messageOffset > 0)
+    {
+        std::fprintf(fHandler, "%s %-5s %-22s pid=%d tid=%lu | %s src=%s:%u\n",
+                     timeString.c_str(),
+                     logLevelName(info.severity),
+                     module,
+                     pid,
+                     tid,
+                     message + messageOffset,
+                     info.filename,
+                     info.lineNum);
+        return;
+    }
+
+    std::fprintf(fHandler, "%s %-5s %-22s | %s src=%s:%u\n",
+                 timeString.c_str(),
+                 logLevelName(info.severity),
+                 "-",
+                 message,
+                 info.filename,
+                 info.lineNum);
 }
 
 template<typename... Ts>
 inline void __attribute__((always_inline)) printLog(FILE * fHandler, const StaticLogInfo&info, Log::UncompressedEntry*entry, uint32_t threadId,const Log::Checkpoint & checkPoint,char **printfBuf, int &printfBufSizeTotal)
 {
+    if (fHandler == nullptr)
+        return;
+
     std::vector<char *> printBufAddrVec ;
     int printBufWrittenlen= 0;
 
@@ -1194,13 +1234,22 @@ inline void __attribute__((always_inline)) printLog(FILE * fHandler, const Stati
         
     }
 
-
-    printfLogHeader(fHandler, info, entry,threadId, checkPoint);
-    
     int argIndexFromRight = 0;
     int totalSize = sizeof...(Ts);
-    fprintf(fHandler, info.formatString, getArgByIndex<Ts>(argIndexFromRight,totalSize, info, printBufAddrVec)...);
-    fprintf(fHandler,"\n");
+    char message[8192];
+    int written = std::snprintf(message,
+                                sizeof(message),
+                                info.formatString,
+                                getArgByIndex<Ts>(argIndexFromRight, totalSize, info, printBufAddrVec)...);
+    if (written < 0) {
+        std::snprintf(message, sizeof(message), "<format error: %s>", info.formatString);
+    } else if (written >= static_cast<int>(sizeof(message))) {
+        const char suffix[] = "... <truncated>";
+        constexpr size_t suffixLen = sizeof(suffix) - 1;
+        std::memcpy(message + sizeof(message) - suffixLen - 1, suffix, suffixLen + 1);
+    }
+
+    writePrettyLogLine(fHandler, info, entry, threadId, checkPoint, message);
 }
 
 
